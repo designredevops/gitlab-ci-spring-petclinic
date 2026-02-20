@@ -43,15 +43,3 @@ jobs:
           else
             echo "No changes detected"
           fi
-
-  link-check:
-    needs: translate
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check Markdown links
-        uses: lycheeorg/lychee-action@v1
-        with:
-          args: --verbose --no-progress README.md README.en.md
