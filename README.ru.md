@@ -1,80 +1,79 @@
-# Spring PetClinic CI/CD Pipeline on Proxmox
+# Spring PetClinic CI/CD Pipeline на Proxmox
 
-This note describes the deployment of a production-ready CI/CD pipeline with GitLab, Kubernetes, Maven, Nexus, SonarQube on a home Proxmox server with complete network isolation.
+В этой записке описывается развертывание production-ready CI/CD pipeline с GitLab, Kubernetes, Maven, Nexus, SonarQube на домашнем Proxmox сервере с полной сетевой изоляцией.
 
-## Table of contents
+## Оглавление
 
-1. [Solution architecture](#архитектура-решения)
-2. [Preparation of virtual machines](#часть-1-подготовка-виртуальных-машин)
-3. [Network Gateway Configuration](#часть-2-настройка-сетевого-шлюза)
-4. [Installing GitLab CE](#часть-3-установка-gitlab-ce)
-5. [Installing K3s Kubernetes](#часть-4-установка-k3s-kubernetes)
+1. [Архитектура решения](#архитектура-решения)
+2. [Подготовка виртуальных машин](#часть-1-подготовка-виртуальных-машин)
+3. [Настройка сетевого шлюза](#часть-2-настройка-сетевого-шлюза)
+4. [Установка GitLab CE](#часть-3-установка-gitlab-ce)
+5. [Установка K3s Kubernetes](#часть-4-установка-k3s-kubernetes)
 6. [Установка Helm](#часть-5-установка-helm)
 7. [Установка SonarQube](#часть-6-установка-sonarqube)
-8. [Installing Nexus Repository](#часть-7-установка-nexus-repository)
-9. [HAProxy setup](#часть-8-настройка-haproxy)
-10. [Nexus setup](#часть-9-настройка-nexus-repository)
-11. [SonarQube setup](#часть-10-настройка-sonarqube)
-12. [GitLab CI/CD Setup](#часть-11-настройка-gitlab-cicd)
-13. [Installing GitLab Runner](#часть-12-установка-gitlab-runner)
+8. [Установка Nexus Repository](#часть-7-установка-nexus-repository)
+9. [Настройка HAProxy](#часть-8-настройка-haproxy)
+10. [Настройка Nexus](#часть-9-настройка-nexus-repository)
+11. [Настройка SonarQube](#часть-10-настройка-sonarqube)
+12. [Настройка GitLab CI/CD](#часть-11-настройка-gitlab-cicd)
+13. [Установка GitLab Runner](#часть-12-установка-gitlab-runner)
 14. [Запуск Pipeline](#часть-13-запуск-и-тестирование-pipeline)
-15. [Monitoring and Debugging](#часть-14-мониторинг-и-отладка)
-16. [Additional settings](#часть-15-дополнительные-настройки)
+15. [Мониторинг и отладка](#часть-14-мониторинг-и-отладка)
+16. [Дополнительные настройки](#часть-15-дополнительные-настройки)
 
-***
-
+---
 <img width="1919" height="987" alt="image" src="https://github.com/user-attachments/assets/8fa352de-f3ec-4055-ba3e-fb0bb5bc0a20" />
 
-Original repository:\r\nhttps://github.com/kunchalavikram1427/gitlab-ci-spring-petclinic
 
-## Solution architecture
 
-### Infrastructure components
+Оригинальный репозиторий:
+https://github.com/kunchalavikram1427/gitlab-ci-spring-petclinic
 
-| Component | Purpose | Version |
+## Архитектура решения
+
+### Компоненты инфраструктуры
+
+| Компонент | Назначение | Версия |
 |-----------|-----------|---------|
-| **GitLab CE** | Repository Management System and CI/CD Orchestration | Latest |
-| **Kubernetes (K3s)** | Lightweight container orchestration | v1.27+ |
-| **Nexus Repository** | Artifact repository (Maven, Docker) | 3.x |
-| **SonarQube** | Static Code Quality Analysis | 9.9+ LTS |
-| **GitLab Runner** | CI/CD task executor in Kubernetes | Latest |
-| **HAProxy** | Reverse Proxy and Load Balancer | 2.8+ |
-| **BIND9** | Authoritative DNS server for internal zone | 9.18+ |
-| **MetalLB** | Bare-metal LoadBalancer for Kubernetes | v0.13+ |
+| **GitLab CE** | Система управления репозиториями и CI/CD оркестрация | Latest |
+| **Kubernetes (K3s)** | Легковесная оркестрация контейнеров | v1.27+ |
+| **Nexus Repository** | Хранилище артефактов (Maven, Docker) | 3.x |
+| **SonarQube** | Статический анализ качества кода | 9.9+ LTS |
+| **GitLab Runner** | Исполнитель CI/CD задач в Kubernetes | Latest |
+| **HAProxy** | Реверс-прокси и балансировщик нагрузки | 2.8+ |
+| **BIND9** | Авторитативный DNS сервер для внутренней зоны | 9.18+ |
+| **MetalLB** | Bare-metal LoadBalancer для Kubernetes | v0.13+ |
 
-### Network architecture
+### Сетевая архитектура
 
-#### External network: 10.0.10.0/24
+#### Внешняя сеть: 10.0.10.0/24
+- Интернет (серый IP) → Router (10.0.10.1)
+- Proxmox Host: 10.0.10.200
+- Gateway (внешний интерфейс): 10.0.10.30
 
-* Internet (gray IP) → Router (10.0.10.1)
-* Proxmox Host: 10.0.10.200
-* Gateway (external interface): 10.0.10.30
+#### Внутренняя сеть: 192.168.50.0/24 (изолированная DMZ)
+- Gateway (внутренний интерфейс): 192.168.50.1
+  - Роли: NAT gateway, DNS сервер, Jump host, HAProxy
+- GitLab VM: 192.168.50.10
+- K3s Master: 192.168.50.20
+- K3s Worker-1: 192.168.50.21
+- K3s Worker-2: 192.168.50.22
+- SonarQube: 192.168.50.30
+- Nexus Repository: 192.168.50.31
+- MetalLB IP Pool: 192.168.50.100-192.168.50.150
 
-#### Internal network: 192.168.50.0/24 (isolated DMZ)
+#### Сервисы Kubernetes (MetalLB)
+- PetClinic: 192.168.50.103:80
 
-* Gateway (internal interface): 192.168.50.1
-  * Roles: NAT gateway, DNS server, Jump host, HAProxy
-* GitLab VM: 192.168.50.10
-* K3s Master: 192.168.50.20
-* K3s Worker-1: 192.168.50.21
-* K3s Worker-2: 192.168.50.22
-* SonarQube: 192.168.50.30
-* Nexus Repository: 192.168.50.31
-* MetalLB IP Pool: 192.168.50.100-192.168.50.150
+### Преимущества архитектуры
 
-#### Kubernetes Services (MetalLB)
+✅ **Безопасность**: Полная изоляция DevOps инфраструктуры во внутренней сети  
+✅ **Единая точка доступа**: Все сервисы через HAProxy на шлюзе  
+✅ **DNS резолвинг**: Локальная зона .local.lab без редактирования hosts  
+✅ **Масштабируемость**: Легко добавлять новые ноды и сервисы  
+✅ **Отказоустойчивость**: Несколько worker нод для Kubernetes  
 
-* PetClinic: 192.168.50.103:80
-
-### Advantages of architecture
-
-✅ **Safety**Complete isolation of DevOps infrastructure within the internal network\
-✅ **Single access point**All services through HAProxy on the gateway\
-✅ **DNS resolving**: Local zone .local.lab without editing hosts\
-✅ **Scalability**Easy to add new nodes and services\
-✅ **Fault tolerance**: Several worker nodes for Kubernetes
-
-### Network topology diagram
+### Диаграмма сетевой топологии
 
 ```
 Internet (Grey IP)
@@ -101,45 +100,45 @@ Internet (Grey IP)
                           └─→ MetalLB Services (192.168.50.100+)
 ```
 
-***
+---
 
-## Part 1: Preparation of virtual machines
+## Часть 1: Подготовка виртуальных машин
 
-### 1.1 VM Resource Requirements
+### 1.1 Требования к ресурсам VM
 
-| VM | CPU | RAM | Disk | Purpose | Internal/External IP Address |
-|----|-----|-----|------|---------|---------------------------|
+| VM | CPU | RAM | Disk | Назначение |IP адрес внут./внеш. |
+|----|-----|-----|------|-----------|-----------|
 | Gateway | 2 | 4GB | 20GB | NAT, DNS (BIND), HAProxy, Jump host | 192.168.50.1 / 10.0.10.30 |
 | GitLab | 4 | 8GB | 50GB | Git repository, CI/CD orchestration |192.168.50.10  |
 | K3s Master | 2 | 4GB | 40GB | Kubernetes control plane |192.168.50.20|
 | K3s Worker-1 | 2 | 8GB | 60GB | Kubernetes workloads  |192.168.50.21|
 | K3s Worker-2 | 2 | 8GB | 60GB | Kubernetes workloads |192.168.50.22|
-| SonarQube | 2 | 4GB | 40GB | Code Scanning |192.168.50.30|
-| Nexus | 2 | 4GB | 100GB | Nexus repository |192.168.50.31|
+| SonarQube | 2 | 4GB | 40GB | Code Scaning |192.168.50.30|
+| Nexus | 2 | 4GB | 100GB | Nexus repositoru |192.168.50.31|
 
-**Total**12 vCPU, 32GB RAM, 230GB Disk
+**Итого**: 12 vCPU, 32GB RAM, 230GB Disk
 
-### 1.2 Configuring network bridges on Proxmox
+### 1.2 Настройка сетевых bridge на Proxmox
 
-SSH on Proxmox host:
+SSH на Proxmox хост:
 
 ```bash
 ssh root@10.0.10.200
 ```
 
-Check the current configuration:
+Проверьте текущую конфигурацию:
 
 ```bash
 cat /etc/network/interfaces
 ```
 
-Add an internal bridge (if missing):
+Добавьте внутренний bridge (если отсутствует):
 
 ```bash
 nano /etc/network/interfaces
 ```
 
-Add to the end of the file:
+Добавьте в конец файла:
 
 ```
 # Внутренняя изолированная сеть
@@ -153,7 +152,7 @@ iface vmbr1 inet manual
 #Internal DevOps network
 ```
 
-Applying changes:
+Применение изменений:
 
 ```bash
 ifreload -a
@@ -161,39 +160,39 @@ ifreload -a
 systemctl restart networking
 ```
 
-Examination:
+Проверка:
 
 ```bash
 ip link show vmbr1
 brctl show vmbr1
 ```
 
-**Important** : vmbr1 does not have an IP address on the Proxmox host - it is only an L2 bridge.
+**Важно**: vmbr1 не имеет IP адреса на Proxmox хосте - это только L2 bridge.
 
-### 1.3 Creating a Cloud-Init template for Ubuntu 22.04
+### 1.3 Создание Cloud-Init шаблона Ubuntu 22.04
 
-In the Terraform folder, there will be an automatic installation of the Ubuntu 22.04 template
+В папке Terraform будет автоматическая установка шаблона Ubuntu 22.04
 
-### 1.4 Terraform configuration for Proxmox
 
-In the Terraform folder, all files for creating VMs and templates for this project
+### 1.4 Terraform конфигурация для Proxmox
 
-## Part 2: Network Gateway Configuration
+В папке Terraform все файлы по созданию ВМ и шаблона для этого проекта
 
-The gateway performs four critical functions:
+## Часть 2: Настройка сетевого шлюза
 
-1. **NAT Gateway** - provides internal network access to the internet
-2. **DNS Server (BIND9)** - resolving local zone .local.lab
-3. **Jump Host** - a single point of SSH access to the internal network
-4. **Reverse Proxy (HAProxy)** - proxying HTTP traffic to services
+Gateway выполняет четыре критические функции:
+1. **NAT Gateway** - обеспечивает доступ внутренней сети в интернет
+2. **DNS Server (BIND9)** - резолвинг локальной зоны .local.lab
+3. **Jump Host** - единая точка SSH доступа к внутренней сети
+4. **Reverse Proxy (HAProxy)** - проксирование HTTP трафика к сервисам
 
-### 2.1 Connecting to Gateway
+### 2.1 Подключение к Gateway
 
 ```bash
 ssh ubuntu@10.0.10.30
 ```
 
-### 2.2 Basic system setup
+### 2.2 Базовая настройка системы
 
 ```bash
 # Обновление системы
@@ -214,16 +213,16 @@ sudo apt install -y \
 ip addr show
 ```
 
-Expected output:
+Ожидаемый вывод:
 
 ```
 eth0: 10.0.10.30/24 (внешний)
 eth1: 192.168.50.1/24 (внутренний)
 ```
 
-**Important**: Interface names may vary (eth0, enp0s18, ens8, etc.). Use the current names in the following commands.
+**Важно**: Имена интерфейсов могут отличаться (eth0, enp0s18, ens8 и т.д.). Используйте актуальные имена в дальнейших командах.
 
-### 2.3 Configuring IP Forwarding and NAT
+### 2.3 Настройка IP Forwarding и NAT
 
 ```bash
 # Включение IP forwarding перманентно
@@ -241,7 +240,7 @@ sudo sysctl -p
 sysctl net.ipv4.ip_forward
 ```
 
-Configuring iptables for NAT:
+Настройка iptables для NAT:
 
 ```bash
 # Определение интерфейсов
@@ -286,18 +285,18 @@ sudo iptables -P OUTPUT ACCEPT
 sudo netfilter-persistent save
 ```
 
-Checking the rules:
+Проверка правил:
 
 ```bash
 sudo iptables -L -v -n
 sudo iptables -t nat -L -v -n
 ```
 
-### 2.4 Installation and configuration of BIND9 DNS
+### 2.4 Установка и настройка BIND9 DNS
 
-BIND9 will be the authoritative DNS server for the zone `local.lab` and forward external requests.
+BIND9 будет авторитативным DNS сервером для зоны `local.lab` и форвардить внешние запросы.
 
-#### 2.4.1 Installing BIND9
+#### 2.4.1 Установка BIND9
 
 ```bash
 # Обновление системы
@@ -312,15 +311,15 @@ sudo systemctl stop systemd-resolved
 sudo rm -f /etc/resolv.conf
 ```
 
-#### 2.4.2 Configuring the main configuration
+#### 2.4.2 Настройка основной конфигурации
 
-Editing the main configuration file:
+Редактирование главного конфигурационного файла:
 
 ```bash
 sudo vim /etc/bind/named.conf.options
 ```
 
-Replace the content with:
+Замените содержимое на:
 
 ```bash
 sudo bash -c 'cat > /etc/bind/named.conf.options <<EOF
@@ -356,15 +355,15 @@ options {
 EOF'
 ```
 
-#### 2.4.3 Creating the local.lab zone
+#### 2.4.3 Создание зоны local.lab
 
-Editing local zones:
+Редактирование локальных зон:
 
 ```bash
 sudo vim /etc/bind/named.conf.local
 ```
 
-Add:
+Добавьте:
 
 ```
 sudo bash -c 'cat > /etc/bind/named.conf.local <<EOF
@@ -384,21 +383,21 @@ zone "50.168.192.in-addr.arpa" {
 EOF'
 ```
 
-#### 2.4.4 Creating zone files
+#### 2.4.4 Создание файлов зон
 
-Create a directory for zones:
+Создайте директорию для зон:
 
 ```bash
 sudo mkdir -p /etc/bind/zones
 ```
 
-Create a direct zone:
+Создайте прямую зону:
 
 ```bash
 sudo vim /etc/bind/zones/db.local.lab
 ```
 
-Content:
+Содержимое:
 
 ```
 sudo bash -c 'cat > /etc/bind/zones/db.local.lab <<EOF
@@ -436,13 +435,13 @@ app             IN      CNAME   petclinic
 EOF'
 ```
 
-Create a reverse zone:
+Создайте обратную зону:
 
 ```bash
 sudo vim /etc/bind/zones/db.192.168.50
 ```
 
-Content:
+Содержимое:
 
 ```
 sudo bash -c 'cat > /etc/bind/zones/db.192.168.50 <<EOF
@@ -470,7 +469,7 @@ sudo bash -c 'cat > /etc/bind/zones/db.192.168.50 <<EOF
 EOF'
 ```
 
-#### 2.4.5 BIND Configuration Check
+#### 2.4.5 Проверка конфигурации BIND
 
 ```bash
 # Проверка синтаксиса основной конфигурации
@@ -483,7 +482,7 @@ sudo named-checkzone local.lab /etc/bind/zones/db.local.lab
 sudo named-checkzone 50.168.192.in-addr.arpa /etc/bind/zones/db.192.168.50
 ```
 
-Expected output (without errors):
+Ожидаемый вывод (без ошибок):
 
 ```
 zone local.lab/IN: loaded serial 3
@@ -492,7 +491,7 @@ zone 50.168.192.in-addr.arpa/IN: loaded serial 3
 OK
 ```
 
-#### 2.4.6 Launch and verification of BIND9
+#### 2.4.6 Запуск и проверка BIND9
 
 ```bash
 # Перезапуск BIND9
@@ -508,9 +507,9 @@ sudo systemctl status bind9
 sudo journalctl -u bind9 -f
 ```
 
-#### 2.4.7 DNS Testing
+#### 2.4.7 Тестирование DNS
 
-On Gateway:
+На Gateway:
 
 ```bash
 # Тест прямого резолвинга
@@ -527,18 +526,19 @@ dig @127.0.0.1 google.com
 nslookup google.com 127.0.0.1
 ```
 
-**Important**Ensure that all DNS queries return correct IP addresses.
+**Важно**: Убедитесь, что все DNS запросы возвращают корректные IP адреса.
 
-#### 2.4.8 DNS Configuration on Client Machines
+#### 2.4.8 Настройка DNS на клиентских машинах
 
-### DNS Configuration on all VMs
+### Настройка DNS на всех VM
 
-#### Manual configuration of jumphost
+
+#### Ручная настройка jumphost
+
 
 ```bash
 ssh admin@jumphost.local.lab
 ```
-
 ```bash
 
 
@@ -585,7 +585,7 @@ ping -c 2 google.com
 nslookup k3s-master.local.lab
 ```
 
-Create a script for automation:
+Создайте скрипт для автоматизации:
 
 ```bash
 # На jumphost создайте файл set-dns.sh
@@ -660,7 +660,7 @@ EOF
 chmod +x /tmp/set-dns.sh
 ```
 
-#### Apply to all VMs
+#### Применение на всех VM
 
 ```bash
 # На jumphost создайте список хостов (только внутренние VM)
@@ -685,9 +685,10 @@ done
 # Для VM с двумя интерфейсами (jumphost уже настроен вручную)
 ```
 
-### Internet availability check
 
-On any VM in the 192.168.50.0/24 network:
+### Проверка доступности интернета
+
+На любой VM в сети 192.168.50.0/24:
 
 ```bash
 # Проверка маршрутов
@@ -706,7 +707,7 @@ sudo apt update
 sudo apt install -y curl wget vim
 ```
 
-### 2.5 Gateway Operation Check
+### 2.5 Проверка работы Gateway
 
 ```bash
 # На Gateway проверка связности
@@ -718,18 +719,13 @@ ping -c 3 8.8.8.8  # должен работать через NAT
 ping -c 3 google.com  # должен резолвиться через BIND
 nslookup gitlab.local.lab  # должен вернуть 192.168.50.10
 ```
-
-Connection from an external machine in 10.0.10.0/24 to internal 192.168.50.0/24:
-
+Соединение на внешней машине из 10.0.10.0/24 с внутренними 192.168.50.0.24:
 ```bash
 # С внутренних VM (через jump)
 ssh -J ubuntu@10.0.10.30 ubuntu@192.168.50.10
 ```
-
-### Setting up SSH access on all VMs
-
-Copying the public key
-
+### Настройка SSH доступа на все VM
+Копирование публичного ключа
 ```bash
 # Создаем приватный и публичный ключ на Gateway
 ssh-keygen -t ed25519 -C "devops@local.lab" -f ~/.ssh/proxmox_devops
@@ -758,9 +754,7 @@ EOF
 # Установливаем правильные права:
 chmod 600 ~/.ssh/config
 ```
-
-Optional example of adding each host separately:
-
+Не обязательный пример добавления по отдельности каждый хост:
 ```bash
 cat >> ~/.ssh/config <<EOF
 # Или отдельно для каждого хоста
@@ -773,25 +767,22 @@ Host k3s-master.local.lab
     IdentityFile ~/.ssh/proxmox_devops
 EOF
 ```
-
-Checking login with key from Jumphost:
-
+Проверяем вход по ключу с Jumphost:
 ```bash
 ssh gitlab.local.lab      # автоматически подставляем  правильный ключ без опции -i <key_name>
 ssh k3s-master.local.lab  # автоматически подставляем правильный ключ без опции -i <key_name>
 ```
+---
 
-***
+## Часть 3: Установка GitLab CE
 
-## Part 3: Installing GitLab CE
-
-### 3.1 Connecting to GitLab VM
+### 3.1 Подключение к GitLab VM
 
 ```bash
 ssh -J ubuntu@10.0.10.30 ubuntu@192.168.50.10
 ```
 
-### 3.2 System Preparation
+### 3.2 Подготовка системы
 
 ```bash
 # Обновление
@@ -810,7 +801,7 @@ sudo apt install -y \
 # Mail name: gitlab.local.lab
 ```
 
-### 3.3 Installing GitLab CE
+### 3.3 Установка GitLab CE
 
 ```bash
 # Добавление репозитория GitLab
@@ -822,7 +813,7 @@ sudo EXTERNAL_URL="http://gitlab.local.lab" apt install -y gitlab-ce
 # Процесс займет 5-10 минут
 ```
 
-### 3.4 Obtaining the initial root password
+### 3.4 Получение начального пароля root
 
 ```bash
 # Пароль сгенерирован автоматически
@@ -831,13 +822,13 @@ sudo cat /etc/gitlab/initial_root_password
 # Сохраните пароль! Файл удаляется через 24 часа
 ```
 
-### 3.5 Configuring GitLab
+### 3.5 Настройка GitLab
 
 ```bash
 sudo vim /etc/gitlab/gitlab.rb
 ```
 
-Find and change the following parameters:
+Найдите и измените следующие параметры:
 
 ```ruby
 # URL доступа
@@ -883,7 +874,7 @@ postgresql['max_worker_processes'] = 4
 gitlab_rails['backup_keep_time'] = 604800  # 7 дней
 ```
 
-Applying the configuration:
+Применение конфигурации:
 
 ```bash
 # Reconfigure (займет 3-5 минут)
@@ -896,8 +887,8 @@ sudo gitlab-ctl status
 sudo gitlab-ctl tail
 ```
 
-Installing kubectl:
-Installing tools:
+Установка kubectl:
+Установка инструментов:
 
 ```bash
 # kubectl
@@ -966,7 +957,7 @@ EOF
 source ~/.bashrc
 ```
 
-Testing:
+Тестирование:
 
 ```bash
 k get nodes
@@ -974,58 +965,58 @@ k get pods -A
 k9s  # Интерактивный интерфейс
 ```
 
-### 3.6 Initial setup via Web
+### 3.6 Первоначальная настройка через Web
 
-From your work machine, open the browser:
+С вашей рабочей машины откройте браузер:
 
 ```
 http://gitlab.local.lab
 ```
 
-1. **First entrance**:
-   * Username: `root`
-   * Password: (from the file initial\_root\_password)
+1. **Первый вход**:
+   - Username: `root`
+   - Password: (из файла initial_root_password)
 
-2. **Change the root password**:
-   * Avatar (top right corner) → Edit profile → Password
-   * Set a new strong password
+2. **Смените пароль root**:
+   - Avatar (верхний правый угол) → Edit profile → Password
+   - Установите новый надежный пароль
 
-3. **Disable registration**(optional):
-   * Admin Area → Settings → General → Sign-up restrictions
-   * Uncheck "Sign-up enabled"
+3. **Отключите регистрацию** (опционально):
+   - Admin Area → Settings → General → Sign-up restrictions
+   - Снимите "Sign-up enabled"
 
-4. **Configure project visibility**:
-   * Admin Area → Settings → General → Visibility and access controls
-   * Default project visibility: Internal or Private
-
-5. **Increase attachment size**
-   * Admin Area > Settings > CI/CD > Locate the "Maximum build artifact size"
-
-### 3.7 Creating a test project
+4. **Настройте видимость проектов**:
+   - Admin Area → Settings → General → Visibility and access controls
+   - Default project visibility: Internal или Private
+5. **Увеличение размера вложения**
+   - Admin Area > Settings > CI/CD > Locate the "Maximum build artifact size"
+  
+     
+### 3.7 Создание тестового проекта
 
 1. New Project → Create blank project
 2. Project name: `spring-petclinic`
-3. Visibility Level: Public (for testing)
-4. Initialize with README: uncheck the box
+3. Visibility Level: Public (для тестирования)
+4. Initialize with README: снять галочку
 5. Create project
 
-**Important**: Save the project URL, for example: `http://gitlab.local.lab/root/spring-petclinic.git`
+**Важно**: Сохраните URL проекта, например: `http://gitlab.local.lab/root/spring-petclinic.git`
 
-***
+---
 
-## Part 4: Installing K3s Kubernetes
+## Часть 4: Установка K3s Kubernetes
 
-K3s is a lightweight Kubernetes distribution, ideal for edge and home labs.
+K3s - это легковесный Kubernetes дистрибутив, идеальный для edge и домашних лабораторий.
 
-### 4.1 Installing K3s Master
+### 4.1 Установка K3s Master
 
-Connecting to Master:
+Подключение к Master:
 
 ```bash
 ssh -J ubuntu@10.0.10.30 ubuntu@192.168.50.20
 ```
 
-Installing K3s:
+Установка K3s:
 
 ```bash
 # Установка K3s master с отключением Traefik и ServiceLB
@@ -1051,7 +1042,7 @@ kubectl get nodes
 # k3s-master   Ready    control-plane,master   1m    v1.27.x+k3s1
 ```
 
-### 4.2 Obtaining the token for Worker nodes
+### 4.2 Получение токена для Worker nodes
 
 ```bash
 # Токен для присоединения worker nodes
@@ -1061,7 +1052,7 @@ sudo cat /var/lib/rancher/k3s/server/node-token
 # K10abc123def456ghi789jkl012mno345pqr::server:678stu901vwx234yz
 ```
 
-### 4.3 Setting up kubectl for the admin user
+### 4.3 Настройка kubectl для пользователя admin
 
 ```bash
 # Создание .kube директории
@@ -1076,15 +1067,15 @@ kubectl get nodes
 kubectl get pods --all-namespaces
 ```
 
-### 4.4 Installing K3s Worker-1
+### 4.4 Установка K3s Worker-1
 
-Connection:
+Подключение:
 
 ```bash
 ssh -J admin@10.0.10.30 admin@192.168.50.21
 ```
 
-Installation:
+Установка:
 
 ```bash
 # Замените K3S_TOKEN на реальный токен с master
@@ -1099,15 +1090,15 @@ curl -sfL https://get.k3s.io | K3S_URL=$K3S_URL K3S_TOKEN=$K3S_TOKEN sh -s - \
 sudo systemctl status k3s-agent
 ```
 
-### 4.5 Installation of K3s Worker-2
+### 4.5 Установка K3s Worker-2
 
-Connection:
+Подключение:
 
 ```bash
 ssh -J admin@10.0.10.30 admin@192.168.50.22
 ```
 
-Installation:
+Установка:
 
 ```bash
 # Используйте тот же токен
@@ -1122,9 +1113,9 @@ curl -sfL https://get.k3s.io | K3S_URL=$K3S_URL K3S_TOKEN=$K3S_TOKEN sh -s - \
 sudo systemctl status k3s-agent
 ```
 
-### 4.6 Cluster Check
+### 4.6 Проверка кластера
 
-On Master:
+На Master:
 
 ```bash
 kubectl get nodes -o wide
@@ -1142,9 +1133,9 @@ kubectl get pods --all-namespaces
 kubectl get componentstatuses
 ```
 
-### 4.7 Installing MetalLB LoadBalancer
+### 4.7 Установка MetalLB LoadBalancer
 
-MetalLB provides LoadBalancer IP addresses for Services in bare-metal clusters.
+MetalLB обеспечивает LoadBalancer IP адреса для Services в bare-metal кластерах.
 
 ```bash
 # Установка MetalLB через манифесты
@@ -1160,7 +1151,7 @@ kubectl wait --namespace metallb-system \
 kubectl get pods -n metallb-system
 ```
 
-Creating IP Pool Configuration:
+Создание конфигурации IP Pool:
 
 ```bash
 cat > metallb-config.yaml <<EOF
@@ -1191,22 +1182,19 @@ kubectl get ipaddresspool -n metallb-system
 kubectl get l2advertisement -n metallb-system
 ```
 
-**Important**MetalLB will automatically assign IPs from the pool 192.168.50.100-150 for Services of type LoadBalancer.
+**Важно**: MetalLB будет автоматически назначать IP из пула 192.168.50.100-150 для Services типа LoadBalancer.
 
-***
+---
 
-## Part 5: Installing Helm
+## Часть 5: Установка Helm
 
-Helm - a package manager for Kubernetes, simplifies application deployment.
+Helm - пакетный менеджер для Kubernetes, упрощает развертывание приложений.
 
-### 5.1 Installing Helm on K3s Master
-
-Connecting to Master
-
+### 5.1 Установка Helm на K3s Master
+Подключение к Master
 ```bash
 ssh -J ubuntu@10.0.10.30 ubuntu@192.168.50.20
 ```
-
 ```bash
 # Установка Helm через официальный скрипт
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
@@ -1225,19 +1213,17 @@ helm repo update
 # Проверка
 helm repo list
 ```
+---
 
-***
+## Часть 6: Установка SonarQube
 
-## Part 6: Installing SonarQube
-
-SonarQube - a platform for continuous code quality inspection.
+SonarQube - платформа для непрерывной инспекции качества кода.
 
 ### SonarQube Server
 
 ```bash
 ssh ubuntu@192.168.50.30
 ```
-
 ```bash
 # Обновление системы
 sudo apt update && sudo apt upgrade -y
@@ -1284,8 +1270,8 @@ services:
 EOF
 ```
 
-**Note:**    By default, the SonarQube and Postgresql containers erase their data upon restart (sudo docker-compose down). Therefore, you need to create another yaml file with a persistent volume, that is, storing data on the host machine. Here is an example of a persistent SonarQube machine:
 
+**Примечание:**    По умолчанию контейнер SonarQube и Postgresql стирают свои данные при перезапуске (sudo docker-compose down).  Поэтому нужно создать другой yaml файл с persistent volume, то есть хранением данных на хостовой машине. Вот пример постоянной машины Sonarqube:
 ```
 sudo tee docker-compose.yml > /dev/null <<EOF
 services:
@@ -1325,16 +1311,15 @@ volumes:
 EOF
 ```
 
-### Starting SonarQube if it is not running
+
+### Запуск SonarQube если он не запущен
 
 ```bash
 sudo docker-compose up -d
 ```
+Нужно пождать 3-5 минут пока скачаются docker образы sonarqube и postgresql.
 
-You need to wait 3-5 minutes while the SonarQube and PostgreSQL docker images are downloaded.
-
-**Examination:**
-
+**Проверка:**
 ```bash
 sudo docker-compose logs
 sudo docker ps
@@ -1342,30 +1327,32 @@ sudo docker logs -f admin-sonarqube-1
 sudo docker logs -f sonarqube_db
 
 ```
+**Настройка Webhook для этапа QualityGate:**
+Нужно обязательно настроить веб хуки для Jenkins, когда код проекта будет проверен, SonarQube отправит вебхук в Jenkins, что проверка завршена. В противном случае,задание Quality Gate будет висеть минут 5 и потом вывалится в ошибку, так как Jenkins не получил веб хук от SonarQube.
 
-**Setting up Webhook for the QualityGate stage:**
-It is necessary to configure webhooks for Jenkins so that when the project code is checked, SonarQube sends a webhook to Jenkins indicating that the check is complete. Otherwise, the Quality Gate task will hang for about 5 minutes and then fail because Jenkins did not receive the webhook from SonarQube.
 
-* **Specify the SonarQube host address so that the correct JSON is formed when sending the webhook:** Administration → Configuration → General Settings → Server base URL → http://sonar.local.lab:9000
-* **Create a webhook, go to the Administration menu:**
-  Administration -> Configuration -> Webhooks -> Create
-  Project -> Boardgame -> Project Settings -> Webhooks -> Create
-* Name: jenkins-webhook
-* URL: http://jenkins.local.lab:8080/sonarqube-webhook/
-* Create
-
-**You can also attach webhooks to an individual project**
+- **Указываем адрес хоста SonarQube чтобы при отправке webhook формировался верный json:** Administration → Congiguration → General Settings → Server base URL → http://sonar.local.lab:9000
+- **Создаем вебхук идем в меню Administration:**
+Administration -> Configuration -> Webhooks -> Create
 Project -> Boardgame -> Project Settings -> Webhooks -> Create
+- Name: jenkins-webhook
+- URL: http://jenkins.local.lab:8080/sonarqube-webhook/
+- Create
+
+**Также можно повешать вебхуки на отдельный проект**
+Project -> Boardgame -> Project Settings -> Webhooks -> Create
+
+
 
 <img width="1100" height="755" alt="image" src="https://github.com/user-attachments/assets/ae38f361-e5f3-49be-8548-fa819e3c0cc0" />
 Веб интерфейс sonarqube.
 
-**Access:** `https://sonar.your-domain.com:9000`\
-**Login:** admin/admin (change after first login)
+**Доступ:** `https://sonar.your-domain.com:9000`  
+**Логин:** admin/admin (измените после первого входа)
 
 ### 7. Nexus Repository
 
-Nexus Repository is used for storing artifacts (npm, docker, etc.)
+Nexus Repository  используется для хранентя артефактов (npm, docker и т.д.)
 
 ```bash
 ssh ubuntu@192.168.50.31
@@ -1401,50 +1388,47 @@ sleep 15
 sudo docker exec nexus cat /nexus-data/admin.password; echo
 ```
 
-**Access:** `https://nexus.your-domain.com:8081`\
-**Login:** admin + password from the command above
+**Доступ:** `https://nexus.your-domain.com:8081`  
+**Логин:** admin + пароль из команды выше
 
-Note: When installing Nexus, 2 repositories are created by default **maven-releases**and**maven-snapshots**. If they do not exist, they will need to be created.
+Примечание: При установке Nexus по умолчанию создаются 2 репозитория **maven-releases** и **maven-snapshots**. Если их нет, нужно будет создать. 
 
-**Creating repositories:**
-
+**Создание репозиториев:**
 1. Sign in
-2. Server administration (gear) → Repositories → Create repository
-3. Create:`maven-releases` (maven2 hosted)
-4. Create:`maven-snapshots` (maven2 hosted)
+2. Server administration (шестеренка) → Repositories → Create repository
+3. Создайте: `maven-releases` (maven2 hosted)
+4. Создайте: `maven-snapshots` (maven2 hosted)
 
-***
+---
 
-## Part 8: Configuring HAProxy
+## Часть 8: Настройка HAProxy
 
-HAProxy on the Gateway provides reverse proxy for all services through domain names.
+HAProxy на Gateway обеспечивает реверс-прокси для всех сервисов через доменные имена.
 
-### 8.1 Installing HAProxy
+### 8.1 Установка HAProxy
 
-On Gateway (10.0.10.30):
-
+На Gateway (10.0.10.30):
 ```bash
 ssh ubuntu@10.0.10.30
 ```
-
 ```bash
 sudo apt update
 sudo apt install -y haproxy
 ```
 
-### 8.2 Configuration Backup
+### 8.2 Резервное копирование конфигурации
 
 ```bash
 sudo cp /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.backup
 ```
 
-### 8.3 HAProxy Configuration
+### 8.3 Настройка HAProxy
 
 ```bash
 sudo vim /etc/haproxy/haproxy.cfg
 ```
 
-Add to the end of the file (after defaults):
+Добавьте в конец файла (после defaults):
 
 ```
 #---------------------------------------------------------------------
@@ -1518,7 +1502,7 @@ listen stats
     # stats auth admin:admin  # Раскомментируйте для Basic Auth
 ```
 
-### 8.4 Configuration Check
+### 8.4 Проверка конфигурации
 
 ```bash
 # Проверка синтаксиса
@@ -1528,7 +1512,7 @@ sudo haproxy -c -f /etc/haproxy/haproxy.cfg
 # Configuration file is valid
 ```
 
-### 8.5 Starting HAProxy
+### 8.5 Запуск HAProxy
 
 ```bash
 # Перезапуск HAProxy
@@ -1544,9 +1528,9 @@ sudo systemctl status haproxy
 sudo journalctl -u haproxy -f
 ```
 
-### 8.6 Checking access to services
+### 8.6 Проверка доступа к сервисам
 
-From your work machine (after DNS setup):
+С вашей рабочей машины (после настройки DNS):
 
 ```bash
 # GitLab
@@ -1562,47 +1546,47 @@ curl -I http://sonarqube.local.lab:9000
 curl -I http://petclinic.local.lab
 ```
 
-Open in the browser:
+Откройте в браузере:
 
-* http://gitlab.local.lab
-* http://nexus.local.lab:8081
-* http://sonarqube.local.lab:9000
+- http://gitlab.local.lab
+- http://nexus.local.lab:8081
+- http://sonarqube.local.lab:9000
 
-**HAProxy Statistics Page**:
+**Страница статистики HAProxy**:
 
 ```
 http://10.0.10.30:8404/stats
 ```
 
-***
+---
 
-## Part 9: Setting up Nexus Repository
+## Часть 9: Настройка Nexus Repository
 
-### 9.1 Initial Setup
+### 9.1 Первоначальная настройка
 
-1. Open http://nexus.local.lab
-2. Click "Sign In" (top right corner)
-3. Username: `admin`, Password: (previously received)
-4. Follow the wizard:
-   * Change admin password (set a new one)
-   * Configure Anonymous Access: Enable (for reading)
-   * Finish
+1. Откройте http://nexus.local.lab
+2. Click "Sign In" (верхний правый угол)
+3. Username: `admin`, Password: (полученный ранее)
+4. Следуйте wizard:
+   - Change admin password (установите новый)
+   - Configure Anonymous Access: Enable (для чтения)
+   - Finish
 
-### 9.2 Creating Blob Stores
+### 9.2 Создание Blob Stores
 
-Settings (gear) → Repository → Blob Stores → Create Blob Store:
+Settings (шестеренка) → Repository → Blob Stores → Create Blob Store:
 
 1. **maven-releases**
-   * Type: File
-   * Name: `maven-releases`
-   * Path: default
+   - Type: File
+   - Name: `maven-releases`
+   - Path: default
 
 2. **maven-snapshots**
-   * Type: File
-   * Name: `maven-snapshots`
-   * Path: default
+   - Type: File
+   - Name: `maven-snapshots`
+   - Path: default
 
-### 9.3 Creating Maven Repositories
+### 9.3 Создание Maven Repositories
 
 Settings → Repository → Repositories → Create repository:
 
@@ -1626,34 +1610,34 @@ Settings → Repository → Repositories → Create repository:
 6. Deployment policy: `Allow redeploy`
 7. Create repository
 
-### 9.4 Creating a Maven Group (optional but recommended)
+### 9.4 Создание Maven Group (опционально, но рекомендуется)
 
-The group combines several repositories for simplified access.
+Группа объединяет несколько репозиториев для упрощенного доступа.
 
 1. Recipe: `maven2 (group)`
 2. Name: `maven-public-group`
 3. Blob store: `default`
-4. Member repositories (in order of priority):
-   * maven-hosted-release
-   * maven-hosted-snapshot
-   * maven-central (already available by default)
+4. Member repositories (в порядке приоритета):
+   - maven-hosted-release
+   - maven-hosted-snapshot
+   - maven-central (уже есть по умолчанию)
 5. Create repository
 
-### 9.5 Creating Docker Registry (optional)
+### 9.5 Создание Docker Registry (опционально)
 
-If you plan to store Docker images in Nexus:
+Если планируете хранить Docker образы в Nexus:
 
 1. Recipe: `docker (hosted)`
 2. Name: `docker-hosted`
-3. HTTP:`8082`
-4. Enable Docker V1 API: uncheck
+3. HTTP: `8082`
+4. Enable Docker V1 API: снять галочку
 5. Blob store: `default`
 6. Deployment policy: `Allow redeploy`
 7. Create repository
 
-**Important**: For Docker registry, an additional Service in Kubernetes and HAProxy configuration are required.
+**Важно**: Для Docker registry потребуется дополнительный Service в Kubernetes и настройка HAProxy.
 
-### 9.6 Creating a user for CI/CD
+### 9.6 Создание пользователя для CI/CD
 
 Settings → Security → Users → Create user:
 
@@ -1662,31 +1646,31 @@ Settings → Security → Users → Create user:
 3. Last name: `CI`
 4. Email: `gitlab-ci@local.lab`
 5. Status: `Active`
-6. Roles: `nx-admin` (or create a separate role with deploy rights)
-7. Password: (set a strong password)
+6. Roles: `nx-admin` (или создайте отдельную роль с правами на deploy)
+7. Password: (установите надежный пароль)
 8. Create user
 
-**Important**Save credentials for use in GitLab CI/CD.
+**Важно**: Сохраните credentials для использования в GitLab CI/CD.
 
-### 9.7 Checking access to repositories
+### 9.7 Проверка доступа к репозиториям
 
-Copy the repository URLs:
+Скопируйте URL репозиториев:
 
-* Releases: `http://nexus.local.lab/repository/maven-hosted-release/`
-* Snapshots: `http://nexus.local.lab/repository/maven-hosted-snapshot/`
-* Group: `http://nexus.local.lab/repository/maven-public-group/`
+- Releases: `http://nexus.local.lab/repository/maven-hosted-release/`
+- Snapshots: `http://nexus.local.lab/repository/maven-hosted-snapshot/`
+- Group: `http://nexus.local.lab/repository/maven-public-group/`
 
-***
+---
 
-## Part 10: SonarQube Setup
+## Часть 10: Настройка SonarQube
 
-### 10.1 Initial Setup
+### 10.1 Первоначальная настройка
 
-1. Open http://sonarqube.local.lab:9000
+1. Откройте http://sonarqube.local.lab:9000
 2. Login: `admin` / Password: `admin`
-3. SonarQube will ask to change the password - set a new one
+3. SonarQube попросит сменить пароль - установите новый
 
-### 10.2 Creating a project
+### 10.2 Создание проекта
 
 1. Create Project → Manually
 2. Project display name: `Spring PetClinic`
@@ -1694,7 +1678,7 @@ Copy the repository URLs:
 4. Main branch name: `master`
 5. Set Up
 
-### 10.3 Token Generation for CI/CD
+### 10.3 Генерация токена для CI/CD
 
 1. Provide a token → Generate
 2. Token name: `gitlab-ci-token`
@@ -1702,50 +1686,49 @@ Copy the repository URLs:
 4. Expires in: `90 days`
 5. Generate
 
-**Important**Copy the token immediately! It is shown only once.
+**Важно**: Скопируйте токен немедленно! Он показывается только один раз.
 
-Example token:
-
+Пример токена:
 ```
 squ_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8
 ```
 
-### 10.4 Quality Gate Setup (optional)
+### 10.4 Настройка Quality Gate (опционально)
 
-Quality Gates define the criteria for code quality.
+Quality Gates определяют критерии качества кода.
 
 1. Quality Gates → Create
 2. Name: `GitLab CI Gate`
 3. Add Condition:
-   * On Overall Code:
-     * Coverage: is less than `70%` → Warning
-     * Duplicated Lines (%): is greater than `3%` → Warning
-   * On New Code:
-     * Coverage: is less than `80%` → Error
-     * Bugs: is greater than `0` → Error
-     * Code Smells: is greater than `5` → Warning
+   - On Overall Code:
+     - Coverage: is less than `70%` → Warning
+     - Duplicated Lines (%): is greater than `3%` → Warning
+   - On New Code:
+     - Coverage: is less than `80%` → Error
+     - Bugs: is greater than `0` → Error
+     - Code Smells: is greater than `5` → Warning
 4. Save
 
-Binding to project:
+Привязка к проекту:
 
 1. Projects → Spring PetClinic → Project Settings → Quality Gate
 2. Select: `GitLab CI Gate`
 3. Save
 
-### 10.5 Setting up Webhooks for GitLab (optional)
+### 10.5 Настройка Webhooks для GitLab (опционально)
 
-For automatic MR decoration with SonarQube results:
+Для автоматического декорирования MR результатами SonarQube:
 
 1. Administration → Configuration → General Settings → DevOps Platform Integrations
 2. GitLab:
-   * Configuration name: `GitLab Local`
-   * GitLab URL: `http://gitlab.local.lab`
-   * Personal Access Token: (create in GitLab)
+   - Configuration name: `GitLab Local`
+   - GitLab URL: `http://gitlab.local.lab`
+   - Personal Access Token: (создайте в GitLab)
 3. Save
 
-### 10.6 Installing SonarScanner (locally for tests)
+### 10.6 Установка SonarScanner (локально для тестов)
 
-On your workstation:
+На вашей рабочей машине:
 
 **Linux/Mac:**
 
@@ -1756,19 +1739,19 @@ sudo mv sonar-scanner-5.0.1.3006-linux /opt/sonar-scanner
 sudo ln -s /opt/sonar-scanner/bin/sonar-scanner /usr/local/bin/sonar-scanner
 ```
 
-Examination:
+Проверка:
 
 ```bash
 sonar-scanner --version
 ```
 
-***
+---
 
-## Part 11: Setting up GitLab CI/CD
+## Часть 11: Настройка GitLab CI/CD
 
-### 11.1 Cloning Spring PetClinic
+### 11.1 Клонирование Spring PetClinic
 
-On your workstation:
+На вашей рабочей машине:
 
 ```bash
 # Клонирование upstream репозитория
@@ -1778,57 +1761,56 @@ cd spring-petclinic
 # Проверка структуры
 ls -la
 ```
+Примечание: как вариант можно импортировать проект "Pet Clinic" сразу в gitlab. Для этого нужно включить опцию "Импортирование" в глобальных настройках (Settings -> General -> Import and export settings -> проставить галочки).
 
-Note: as an option, you can import the "Pet Clinic" project directly into GitLab. To do this, you need to enable the "Import" option in the global settings (Settings -> General -> Import and export settings -> check the boxes).
+### 11.2 Настройка CI/CD переменных в GitLab
 
-### 11.2 Setting up CI/CD variables in GitLab
-
-1. Open http://gitlab.local.lab/root/spring-petclinic
+1. Откройте http://gitlab.local.lab/root/spring-petclinic
 2. Settings → CI/CD → Variables → Expand → Add variable
 
-Create the following variables:
+Создайте следующие переменные:
 
 | Key | Value | Type | Masked | Protected |
 |-----|-------|------|--------|-----------|
 | `NEXUS_USER` | `gitlab-ci` | Variable | No | No |
-| `NEXUS_PASSWORD` | (user password) | Variable | Yes | No |
+| `NEXUS_PASSWORD` | (пароль пользователя) | Variable | Yes | No |
 | `NEXUS_URL` | `http://192.168.50.31:8081` | Variable | No | No |
 | `SONAR_HOST_URL` | `http://192.168.50.30:9000` | Variable | No | No |
-| `SONAR_TOKEN` | `squ_xxx...` (token from SonarQube) | Variable | Yes | No |
+| `SONAR_TOKEN` | `squ_xxx...` (токен из SonarQube) | Variable | Yes | No |
 | `CI_REGISTRY` | `https://index.docker.io/v1/` | Variable | No | No |
 | `CI_REGISTRY_IMAGE` | `almsys/spring-petclinic` | Variable | No | No |
-| `CI_REGISTRY_USER` | (your Docker Hub username) | Variable | No | No |
+| `CI_REGISTRY_USER` | (ваш Docker Hub username) | Variable | No | No |
 | `CI_REGISTRY_PASSWORD` | (Docker Hub access token) | Variable | Yes | No |
-| `KUBECONFIG` | (contents of ~/.kube/config) | File | No | No |
+| `KUBECONFIG` | (содержимое ~/.kube/config) | File | No | No |
 
-Note: Variables are configured globally as in the example, local ones can also be configured in each project.
+Примечание: Переменные настраиваются глобально как в примере, также можно настроить локальные в каждом проекте.
 
-**Important for KUBECONFIG**:
+**Важно для KUBECONFIG**:
 
-On K3s Master:
+На K3s Master:
 
 ```bash
 cat ~/.kube/config
 ```
 
-Copy all output and create a variable of type **File**in GitLab. Inside the file, there is an IP address 127.0.0.1, change it to the address of the k3s master node (192.168.50.20)
+Скопируйте весь вывод и создайте переменную типа **File** в GitLab. Внутри файла есть IP адрес 127.0.0.1, поменяйте его на адрес k3s master node (192.168.50.20)
 
-**Important for Docker Hub**:
+**Важно для Docker Hub**:
 
-1. Register at https://hub.docker.com
+1. Зарегистрируйтесь на https://hub.docker.com
 2. Account Settings → Security → New Access Token
 3. Description: `gitlab-ci`, Access: `Read, Write, Delete`
-4. Generate and copy the token
+4. Generate и скопируйте токен
 
-### 11.3 Modification of pom.xml
+### 11.3 Модификация pom.xml
 
-Open`pom.xml`in editor:
+Откройте `pom.xml` в редакторе:
 
 ```bash
 vim pom.xml
 ```
 
-In sections`<properties>`add:
+В секции `<properties>` добавьте:
 
 ```xml
 <properties>
@@ -1837,7 +1819,7 @@ In sections`<properties>`add:
 </properties>
 ```
 
-After the closing tag `</repositories>`add:
+После закрывающего тега `</repositories>` добавьте:
 
 ```xml
 <distributionManagement>
@@ -1853,9 +1835,7 @@ After the closing tag `</repositories>`add:
     </snapshotRepository>
 </distributionManagement>
 ```
-
-Complete pom.xml file:
-
+Полный файл pom.xml:
 ```yaml
 
 <?xml version="1.0" encoding="UTF-8"?>
@@ -2254,8 +2234,7 @@ Complete pom.xml file:
   </profiles>
 </project>
 ```
-
-Also add a mirror to speed up the build (optional):
+Также добавьте зеркало для ускорения сборки (опционально):
 
 ```xml
 <repositories>
@@ -2273,16 +2252,16 @@ Also add a mirror to speed up the build (optional):
 </repositories>
 ```
 
-### 11.4 Creating Maven settings.xml
+### 11.4 Создание Maven settings.xml
 
-Create a directory and file:
+Создайте директорию и файл:
 
 ```bash
 mkdir -p .m2
 vim .m2/settings.xml
 ```
 
-Content:
+Содержимое:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -2347,13 +2326,13 @@ Content:
 
 ```
 
-### 11.5 Creating sonar-project.properties
+### 11.5 Создание sonar-project.properties
 
 ```bash
 vim sonar-project.properties
 ```
 
-Content:
+Содержимое:
 
 ```properties
 # Project identification
@@ -2383,13 +2362,13 @@ sonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
 sonar.exclusions=**/test/**,**/resources/**
 ```
 
-### 11.6 Creating a Dockerfile
+### 11.6 Создание Dockerfile
 
 ```bash
 vim Dockerfile
 ```
 
-Content:
+Содержимое:
 
 ```dockerfile
 FROM eclipse-temurin:17-jre-alpine
@@ -2416,9 +2395,9 @@ ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "/app/spr
 CMD ["--server.port=8080"]
 ```
 
-### 11.7 Creating a Helm Chart
+### 11.7 Создание Helm Chart
 
-Create a structure:
+Создайте структуру:
 
 ```bash
 mkdir -p petclinic-chart/templates
@@ -2595,15 +2574,15 @@ spec:
 EOF
 ```
 
-**Important**: Replace`yourdockerhubuser`in`values.yaml` to your actual Docker Hub username.
+**Важно**: Замените `yourdockerhubuser` в `values.yaml` на ваш реальный Docker Hub username.
 
-### 11.8 Creating .gitlab-ci.yml
+### 11.8 Создание .gitlab-ci.yml
 
 ```bash
 vim .gitlab-ci.yml
 ```
 
-Content (full production-ready pipeline):
+Содержимое (полный production-ready pipeline):
 
 ```yaml
 default:
@@ -2709,20 +2688,17 @@ deploy-to-kubernetes:
 
 <img width="1919" height="987" alt="image" src="https://github.com/user-attachments/assets/16042675-eb61-474b-b220-d487a79181da" />
 
-Image. Completed Pipeline.
+Картинка. Завершенный Pipeline.
 
 <img width="1919" height="987" alt="image" src="https://github.com/user-attachments/assets/47caf003-9fe4-4b42-815b-a1afb1819d68" />
 
-Image. Perclinic website.
+Картинка. Сайт Perclinic.
 
-Note: If DNS does not work in the runner, you need to edit the config map with DNS settings
-
+Примечание: Если не работает DNS в runner, то нужно отредактировать config map с настройками DNS 
 ```
 kubectl edit configmap coredns -n kube-system
 ```
-
-In the hosts section, add the local DNS server and add its IP to the forward - 192.168.50.1:
-
+В секцию hosts добавить локальный DNS сервер и в forward доабвить его IP - 192.168.50.1:
 ```
         hosts {
            192.168.50.1 gateway
@@ -2732,9 +2708,7 @@ In the hosts section, add the local DNS server and add its IP to the forward - 1
            max_concurrent 1000
         }
 ```
-
-Sample block:
-
+Примерный блок:
 ```
       hosts /etc/coredns/NodeHosts {
          192.168.50.1 gateway.local.lab
@@ -2749,14 +2723,14 @@ Sample block:
 
 ```
 
-### 11.9 Updating values.yaml with your Docker Hub username
+### 11.9 Обновление values.yaml с вашим Docker Hub username
 
 ```bash
 # Замените yourdockerhubuser на ваш username
 sed -i 's/yourdockerhubuser/ВАSH_DOCKER_USERNAME/g' petclinic-chart/values.yaml
 ```
 
-### 11.10 Sending code to GitLab
+### 11.10 Отправка кода в GitLab
 
 ```bash
 # Инициализация Git (если еще не инициализирован)
@@ -2783,30 +2757,27 @@ git commit -m "Initial commit: CI/CD pipeline configuration
 git push -u origin master
 ```
 
-When requesting credentials:
+При запросе credentials:
+- Username: `root`
+- Password: (пароль root из GitLab)
 
-* Username: `root`
-* Password: (root password from GitLab)
-
-**Important**: If authentication errors occur, create a Personal Access Token in GitLab:
+**Важно**: Если возникнут ошибки аутентификации, создайте Personal Access Token в GitLab:
 
 1. GitLab → Avatar → Preferences → Access Tokens
 2. Token name: `git-push`
 3. Scopes: `api`, `read_repository`, `write_repository`
 4. Create token
-5. Use a token instead of a password:
+5. Используйте токен вместо пароля:
    ```bash
    git push -u origin master
    # Username: root
    # Password: <your-token>
    ```
 
-***
+---
 
-## Part 12: Installing GitLab Runner in Kubernetes
-
-Installation on VM with gitlab
-
+## Часть 12: Установка GitLab Runner в Kubernetes
+Установка на ВМ с gitlab
 ```bash
 # Обновляем систему
 sudo apt update
@@ -2829,26 +2800,21 @@ echo Проверка user gitlab-runner должен быть в группе d
 sudo getent group docker
 
 ```
-
-Maven installation:
-
+Установка maven:
 ```
 sudo apt install -y maven
 mvn --version
 ```
+Альтернатив в k8s
 
-Alternatives in k8s
+GitLab Runner будет исполнять CI/CD задачи внутри Kubernetes кластера.
 
-GitLab Runner will execute CI/CD tasks inside the Kubernetes cluster.
+### 12.1 Добавление Helm репозитория GitLab
 
-### 12.1 Adding GitLab Helm repository
-
-On K3s Master:
-
+На K3s Master:
 ```bash
 ssh -J ubuntu@10.0.10.30 ubuntu@192.168.50.20
 ```
-
 ```bash
 helm repo add gitlab https://charts.gitlab.io
 helm repo update
@@ -2857,33 +2823,27 @@ helm repo update
 helm search repo gitlab-runner
 ```
 
-### 12.2 Obtaining the Registration Token
+### 12.2 Получение Registration Token
 
-In GitLab, we create 2 runners, the first will run in the shell, we will name it "shell-executor".
-And the second runner will run in a docker container, we will name it "docker-executor":
+В GitLab создаем 2 runner, первый будет исполнятся в shell, дадим ему имя "shell-executor".
+А второй runner будет запускаться в docker контейнере, дадим ему "docker-executor":
 
 shell executor:
-
-1. Admin Area (wrench) → CI/CD → Runners → Create instance runner → shell-executor
-2. Copy the Registration token (under "Set up a shared runner manually")
+1. Admin Area (гаечный ключ) → CI/CD → Runners → Create instance runner → shell-executor
+2. Скопируйте Registration token (под "Set up a shared runner manually")
 
 ```
 # для shell executor
 gitlab-runner register  --url http://gitlab.local.lab  --token glrt-Tm6E17vlALZ3MLUxvPusiG86MQp0OjEKdToxCw.01.121v8wq0a
 ```
-
 docker executor:
-
-1. Admin Area (wrench) → CI/CD → Runners → Create instance runner → docker-executor
-2. Copy the Registration token (under "Set up a shared runner manually")
-
+1. Admin Area (гаечный ключ) → CI/CD → Runners → Create instance runner → docker-executor
+2. Скопируйте Registration token (под "Set up a shared runner manually")
 ```
 # для docker executor
 gitlab-runner register  --url http://gitlab.local.lab  --token glrt-Tm6E17vlALZ3MLUxvPusiG86MQp0OjEKdToxCw.01.12124334
 ```
-
-Example token:`GR1348941a1b2c3d4e5f6g7h8i9j0`
-
+Пример токена: `GR1348941a1b2c3d4e5f6g7h8i9j0`
 ```
 # Перезапускаем runner
 sudo gitlab-runner restart
@@ -2891,16 +2851,17 @@ sudo gitlab-runner verify
 # Ручной зарпуск
 sudo gitlab-runner run
 ```
+Примечание: Создаем runner и указываем имя shell-executor и docker-executor, по этому имени runner привязывается в проекту petclinic.
 
-Note: We create a runner and specify the name shell-executor and docker-executor, the runner is linked to the petclinic project by this name.
 
-### 12.3 Creating namespace
+
+### 12.3 Создание namespace
 
 ```bash
 kubectl create namespace gitlab-runner
 ```
 
-### 12.4 Preparing values for Runner
+### 12.4 Подготовка values для Runner
 
 ```bash
 cat > gitlab-runner-values.yaml <<EOF
@@ -3001,9 +2962,9 @@ podAnnotations:
 EOF
 ```
 
-**Important**: Replace`YOUR_REGISTRATION_TOKEN_HERE` to the real token from GitLab.
+**Важно**: Замените `YOUR_REGISTRATION_TOKEN_HERE` на реальный токен из GitLab.
 
-### 12.5 Installing GitLab Runner
+### 12.5 Установка GitLab Runner
 
 ```bash
 helm install gitlab-runner gitlab/gitlab-runner \
@@ -3015,7 +2976,7 @@ helm install gitlab-runner gitlab/gitlab-runner \
 kubectl get pods -n gitlab-runner -w
 ```
 
-### 12.6 Registration Verification
+### 12.6 Проверка регистрации
 
 ```bash
 # Проверка логов
@@ -3027,20 +2988,20 @@ kubectl logs -n gitlab-runner -l app=gitlab-runner-gitlab-runner -f
 # Runner registered successfully.
 ```
 
-In GitLab:
+В GitLab:
 
 1. Admin Area → CI/CD → Runners
-2. You should see a new runner with tags `k8s,kubernetes,docker`
-3. Click on the runner to configure:
-   * Description: `Kubernetes Runner`
-   * Run untagged jobs: ✓ (checked)
-   * Lock to current projects: ☐ (unchecked)
-   * Maximum job timeout: `3600`(1 hour)
+2. Вы должны увидеть новый runner с тегами `k8s,kubernetes,docker`
+3. Кликните на runner для настройки:
+   - Description: `Kubernetes Runner`
+   - Run untagged jobs: ✓ (отмечено)
+   - Lock to current projects: ☐ (снято)
+   - Maximum job timeout: `3600` (1 час)
 4. Save changes
 
-### 12.7 Test Pipeline
+### 12.7 Тестовый Pipeline
 
-Create a test file to check the runner:
+Создайте тестовый файл для проверки runner:
 
 ```bash
 cat > test-runner.yml <<'EOF'
@@ -3054,14 +3015,14 @@ test_job:
 EOF
 ```
 
-In GitLab:
+В GitLab:
 
 1. Repository → + → New file
 2. File name: `.gitlab-ci-test.yml`
-3. Paste the content
+3. Вставьте содержимое
 4. Commit
 
-Or push locally:
+Или запушьте локально:
 
 ```bash
 git add test-runner.yml
@@ -3069,15 +3030,15 @@ git commit -m "Test runner configuration"
 git push origin master
 ```
 
-Check execution in: CI/CD → Pipelines
+Проверьте выполнение в: CI/CD → Pipelines
 
-***
+---
 
-## Part 13: Running and Testing the Pipeline
+## Часть 13: Запуск и тестирование Pipeline
 
-### 13.1 Pipeline Trigger
+### 13.1 Триггер Pipeline
 
-Pipeline is triggered automatically on push to master:
+Pipeline запускается автоматически при push в master:
 
 ```bash
 # Внесите небольшое изменение
@@ -3088,32 +3049,31 @@ git commit -m "Trigger CI/CD pipeline"
 git push origin master
 ```
 
-### 13.2 Pipeline Monitoring
+### 13.2 Мониторинг Pipeline
 
-In GitLab:
+В GitLab:
 
-1. Open http://gitlab.local.lab/root/spring-petclinic
+1. Откройте http://gitlab.local.lab/root/spring-petclinic
 2. CI/CD → Pipelines
-3. Click on the last pipeline
+3. Кликните на последний pipeline
 
-You will see stages:
+Вы увидите stages:
 
 ```
 build → test → quality → package → dockerize → deploy
 ```
 
-**Expected execution time**:
+**Ожидаемое время выполнения**:
+- build: 2-3 минуты
+- test: 3-5 минут
+- quality (SonarQube): 2-3 минуты
+- package: 1-2 минуты
+- dockerize: 3-5 минут
+- deploy: 2-3 минуты (manual)
 
-* build: 2-3 minutes
-* test: 3-5 minutes
-* quality (SonarQube): 2-3 minutes
-* package: 1-2 minutes
-* dockerize: 3-5 minutes
-* deploy: 2-3 minutes (manual)
+**Итого**: ~15-20 минут до manual deployment
 
-**Total**Approximately 15-20 minutes before manual deployment
-
-### 13.3 Analysis of each stage
+### 13.3 Анализ каждого stage
 
 #### Stage: Build
 
@@ -3122,7 +3082,7 @@ build → test → quality → package → dockerize → deploy
 # В GitLab: Pipeline → build job → Logs
 ```
 
-Expected output:
+Ожидаемый вывод:
 
 ```
 🔨 Building Spring PetClinic...
@@ -3139,11 +3099,10 @@ Expected output:
 # В GitLab: Pipeline → test:unit job
 ```
 
-Check:
-
-* Tests run: ~40+ tests
-* Failures: 0
-* Coverage: should be visible in job logs
+Проверьте:
+- Tests run: ~40+ tests
+- Failures: 0
+- Coverage: должно быть видно в job logs
 
 #### Stage: Quality (SonarQube)
 
@@ -3151,29 +3110,28 @@ Check:
 # В GitLab: Pipeline → sonarqube:scan job
 ```
 
-After completion, check SonarQube:
+После завершения проверьте SonarQube:
 
-1. Open http://sonarqube.local.lab
+1. Откройте http://sonarqube.local.lab
 2. Projects → Spring PetClinic
-3. Check the metrics:
-   * Bugs
-   * Vulnerabilities
-   * Code Smells
-   * Coverage
-   * Duplications
+3. Проверьте метрики:
+   - Bugs
+   - Vulnerabilities
+   - Code Smells
+   - Coverage
+   - Duplications
 
 #### Stage: Package
 
-Two jobs:
+Два job'а:
+- `package:jar` - создает JAR файл
+- `deploy:nexus` - загружает артефакт в Nexus
 
-* `package:jar` - creates a JAR file
-* `deploy:nexus` - uploads the artifact to Nexus
+Проверка в Nexus:
 
-Check in Nexus:
-
-1. Open http://nexus.local.lab
-2. Browse → maven-hosted-snapshot (or release)
-3. Find:`org/springframework/samples/petclinic/`
+1. Откройте http://nexus.local.lab
+2. Browse → maven-hosted-snapshot (или release)
+3. Найдите: `org/springframework/samples/petclinic/`
 
 #### Stage: Dockerize
 
@@ -3181,23 +3139,23 @@ Check in Nexus:
 # В GitLab: Pipeline → docker:build job
 ```
 
-After successful completion, check Docker Hub:
+После успешного выполнения проверьте Docker Hub:
 
-1. Open https://hub.docker.com
+1. Откройте https://hub.docker.com
 2. Repositories → spring-petclinic
-3. Теги: `latest`and`<commit-sha>`
+3. Теги: `latest` и `<commit-sha>`
 
 #### Stage: Deploy (Manual)
 
-Deployment requires manual confirmation (production safety):
+Deployment требует ручного подтверждения (безопасность production):
 
-1. In the Pipeline, click on `deploy:kubernetes` job
-2. Click the button**Play** (▶️)
-3. Confirm deployment
+1. В Pipeline кликните на `deploy:kubernetes` job
+2. Нажмите кнопку **Play** (▶️)
+3. Подтвердите deployment
 
-**Monitoring deployment**:
+**Мониторинг deployment**:
 
-On K3s Master:
+На K3s Master:
 
 ```bash
 # Наблюдение за pods
@@ -3217,11 +3175,11 @@ kubectl get svc petclinic
 kubectl logs -l app=petclinic -f
 ```
 
-### 13.4 Application Functionality Check
+### 13.4 Проверка работы приложения
 
-After successful deployment:
+После успешного deployment:
 
-**Through curl**:
+**Через curl**:
 
 ```bash
 # С K3s Master или Gateway
@@ -3231,18 +3189,17 @@ curl http://192.168.50.103
 curl http://petclinic.local.lab
 ```
 
-**Via a browser**:
+**Через браузер**:
 
-Open: http://petclinic.local.lab
+Откройте: http://petclinic.local.lab
 
-You should see the Spring PetClinic UI:
+Вы должны увидеть Spring PetClinic UI:
+- Welcome page
+- Find Owners
+- Veterinarians
+- Error (для тестирования error handling)
 
-* Welcome page
-* Find Owners
-* Veterinarians
-* Error (for testing error handling)
-
-**Health endpoint check**:
+**Проверка health endpoint**:
 
 ```bash
 curl http://petclinic.local.lab/actuator/health
@@ -3253,7 +3210,7 @@ curl http://petclinic.local.lab/actuator/health
 
 ### 13.5 Troubleshooting Pipeline
 
-#### Problem: Build fails
+#### Проблема: Build fails
 
 ```bash
 # Проверка Maven зависимостей
@@ -3266,7 +3223,7 @@ cat .m2/settings.xml
 curl -I http://192.168.50.102:8081
 ```
 
-#### Problem: SonarQube scan fails
+#### Проблема: SonarQube scan fails
 
 ```bash
 # Проверка доступности SonarQube
@@ -3279,7 +3236,7 @@ echo $SONAR_TOKEN  # в job logs (masked)
 # Проверьте существование проекта spring-petclinic
 ```
 
-#### Problem: Docker push fails
+#### Проблема: Docker push fails
 
 ```bash
 # Проверка Docker Hub credentials
@@ -3291,7 +3248,7 @@ docker login
 docker pull $CI_REGISTRY_USER/spring-petclinic:latest
 ```
 
-#### Problem: Kubernetes deployment fails
+#### Проблема: Kubernetes deployment fails
 
 ```bash
 # Проверка kubeconfig
@@ -3312,7 +3269,7 @@ kubectl logs <pod-name>
 
 ### 13.6 Rollback deployment
 
-If the deployment failed or the application is not working correctly:
+Если deployment failed или приложение работает некорректно:
 
 ```bash
 # Откат Helm release
@@ -3325,21 +3282,21 @@ helm uninstall petclinic --namespace default
 kubectl get pods
 ```
 
-In GitLab, you can also use:
+В GitLab также можно использовать:
 
 1. Deployments → Environments → production
-2. Re-deploy → select the previous successful deployment
+2. Re-deploy → выберите предыдущий успешный deployment
 3. Rollback
 
-***
+---
 
-## Part 14: Monitoring and Debugging
+## Часть 14: Мониторинг и отладка
 
-### 14.1 GitLab Monitoring
+### 14.1 Мониторинг GitLab
 
-#### Checking component status
+#### Проверка статуса компонентов
 
-On GitLab VM:
+На GitLab VM:
 
 ```bash
 ssh -J ubuntu@10.0.10.30 ubuntu@192.168.50.10
@@ -3364,7 +3321,7 @@ sudo gitlab-ctl tail
 sudo gitlab-ctl tail puma
 ```
 
-#### Performance testing
+#### Проверка производительности
 
 ```bash
 # Использование ресурсов
@@ -3390,9 +3347,9 @@ sudo tail -f /var/log/gitlab/nginx/gitlab_access.log
 sudo tail -f /var/log/gitlab/sidekiq/current
 ```
 
-### 14.2 Kubernetes Monitoring
+### 14.2 Мониторинг Kubernetes
 
-#### Cluster status check
+#### Проверка состояния кластера
 
 ```bash
 # Подключение к Master
@@ -3413,7 +3370,7 @@ kubectl top nodes
 kubectl top pods --all-namespaces
 ```
 
-#### Checking specific components
+#### Проверка конкретных компонентов
 
 ```bash
 # SonarQube
@@ -3434,7 +3391,7 @@ kubectl get pods -l app=petclinic
 kubectl logs -l app=petclinic -f --all-containers=true
 ```
 
-#### Checking Services and LoadBalancers
+#### Проверка Services и LoadBalancers
 
 ```bash
 # Все services
@@ -3461,9 +3418,9 @@ kubectl describe pvc -n sonarqube
 kubectl describe pvc -n nexus
 ```
 
-### 14.3 Network Monitoring
+### 14.3 Мониторинг сети
 
-#### On the Gateway
+#### На Gateway
 
 ```bash
 ssh ubuntu@10.0.10.30
@@ -3488,7 +3445,7 @@ sudo iptables -L -v -n
 sudo iptables -t nat -L -v -n
 ```
 
-#### Connectivity check
+#### Проверка связности
 
 ```bash
 # С Gateway
@@ -3507,11 +3464,11 @@ curl -I http://nexus.local.lab
 curl -I http://sonarqube.local.lab
 ```
 
-### 14.4 Logs and Debugging
+### 14.4 Логи и Debugging
 
-#### Centralized log collection (optional)
+#### Централизованный сбор логов (опционально)
 
-EFK Stack Installation (Elasticsearch, Fluentd, Kibana):
+Установка EFK Stack (Elasticsearch, Fluentd, Kibana):
 
 ```bash
 # На K3s Master
@@ -3535,48 +3492,48 @@ helm install kibana elastic/kibana \
 kubectl apply -f https://raw.githubusercontent.com/fluent/fluentd-kubernetes-daemonset/master/fluentd-daemonset-elasticsearch.yaml
 ```
 
-#### Simple debugging workflow
+#### Простой debugging workflow
 
-1. **Identify the problem**:
+1. **Определите проблему**:
    ```bash
    kubectl get pods --all-namespaces | grep -v Running
    ```
 
-2. **Check events**:
+2. **Проверьте events**:
    ```bash
    kubectl describe pod <pod-name> -n <namespace>
    ```
 
-3. **View logs**:
+3. **Просмотр логов**:
    ```bash
    kubectl logs <pod-name> -n <namespace> --previous  # Предыдущий crashed container
    kubectl logs <pod-name> -n <namespace> -f  # Follow current logs
    ```
 
-4. **Exec in container**:
+4. **Exec в контейнер**:
    ```bash
    kubectl exec -it <pod-name> -n <namespace> -- /bin/bash
    # или
    kubectl exec -it <pod-name> -n <namespace> -- /bin/sh
    ```
 
-5. **Resource Check**:
+5. **Проверка ресурсов**:
    ```bash
    kubectl describe node <node-name>
    kubectl top pod -n <namespace>
    ```
 
-### 14.5 Alerts and Notifications
+### 14.5 Алерты и уведомления
 
-#### Setting up GitLab Email Notifications
+#### Настройка GitLab Email Notifications
 
-On GitLab VM:
+На GitLab VM:
 
 ```bash
 sudo vim /etc/gitlab/gitlab.rb
 ```
 
-Add (for Gmail example):
+Добавьте (для Gmail example):
 
 ```ruby
 gitlab_rails['smtp_enable'] = true
@@ -3604,22 +3561,22 @@ sudo gitlab-rails console
 Notify.test_email('your-email@example.com', 'Test', 'Test body').deliver_now
 ```
 
-#### GitLab Integrations Setup
+#### Настройка GitLab Integrations
 
-In GitLab:
+В GitLab:
 
 1. Settings → Integrations
-2. Select: Slack, Microsoft Teams, or Webhook
-3. Configure URLs and events:
-   * Pipeline events
-   * Job events
-   * Deployment events
+2. Выберите: Slack, Microsoft Teams, или Webhook
+3. Настройте URLs и события:
+   - Pipeline events
+   - Job events
+   - Deployment events
 
-***
+---
 
-## Part 15: Additional Settings
+## Часть 15: Дополнительные настройки
 
-### 15.1 SSL/TLS with Let's Encrypt
+### 15.1 SSL/TLS с Let's Encrypt
 
 #### Установка Cert-Manager
 
@@ -3631,7 +3588,7 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 kubectl get pods -n cert-manager -w
 ```
 
-#### Creating a ClusterIssuer
+#### Создание ClusterIssuer
 
 ```bash
 cat > letsencrypt-issuer.yaml <<'EOF'
@@ -3654,7 +3611,7 @@ EOF
 kubectl apply -f letsencrypt-issuer.yaml
 ```
 
-#### Installing Nginx Ingress Controller
+#### Установка Nginx Ingress Controller
 
 ```bash
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
@@ -3667,7 +3624,7 @@ helm install ingress-nginx ingress-nginx/ingress-nginx \
   --set controller.service.loadBalancerIP=192.168.50.104
 ```
 
-#### Creating Ingress with SSL
+#### Создание Ingress с SSL
 
 ```bash
 cat > petclinic-ingress.yaml <<'EOF'
@@ -3700,11 +3657,11 @@ EOF
 kubectl apply -f petclinic-ingress.yaml
 ```
 
-**Important**Let's Encrypt requires a public domain. For a local lab, use self-signed certificates.
+**Важно**: Let's Encrypt требует публичный домен. Для локального lab используйте self-signed сертификаты.
 
-### 15.2 Automatic Scaling (HPA)
+### 15.2 Автоматическое масштабирование (HPA)
 
-#### Installing Metrics Server
+#### Установка Metrics Server
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
@@ -3718,7 +3675,7 @@ kubectl top nodes
 kubectl top pods -n default
 ```
 
-#### Creating HPA for PetClinic
+#### Создание HPA для PetClinic
 
 ```bash
 cat > petclinic-hpa.yaml <<'EOF'
@@ -3772,7 +3729,7 @@ kubectl get hpa
 kubectl describe hpa petclinic-hpa
 ```
 
-#### HPA Test with Load
+#### Тест HPA с нагрузкой
 
 ```bash
 # Генерация нагрузки
@@ -3784,7 +3741,7 @@ kubectl get hpa petclinic-hpa -w
 kubectl get pods -l app=petclinic -w
 ```
 
-### 15.3 Monitoring with Prometheus and Grafana
+### 15.3 Мониторинг с Prometheus и Grafana
 
 #### Установка kube-prometheus-stack
 
@@ -3808,26 +3765,26 @@ kubectl get pods -n monitoring
 kubectl get svc -n monitoring
 ```
 
-#### Access to Grafana
+#### Доступ к Grafana
 
-1. URL: `http://192.168.50.106` (or configure HAProxy)
+1. URL: `http://192.168.50.106` (или настройте HAProxy)
 2. Login: `admin` / Password: `admin`
 3. Dashboards → Manage → Kubernetes
-4. Import dashboard:
-   * ID: `8588` (Kubernetes Deployment Statefulset Daemonset metrics)
-   * ID: `6417` (Kubernetes Cluster Monitoring)
-   * ID: `13770` (Kubernetes Monitoring)
+4. Импортируйте dashboard:
+   - ID: `8588` (Kubernetes Deployment Statefulset Daemonset metrics)
+   - ID: `6417` (Kubernetes Cluster Monitoring)
+   - ID: `13770` (Kubernetes Monitoring)
 
-#### Adding to BIND and HAProxy
+#### Добавление в BIND и HAProxy
 
-On Gateway:
+На Gateway:
 
 ```bash
 # BIND
 sudo vim /etc/bind/zones/db.local.lab
 ```
 
-Add:
+Добавьте:
 
 ```
 prometheus      IN      A       192.168.50.105
@@ -3844,7 +3801,7 @@ HAProxy:
 sudo vim /etc/haproxy/haproxy.cfg
 ```
 
-Add frontend ACL and backend:
+Добавьте frontend ACL и backend:
 
 ```
     acl is_prometheus hdr(host) -i prometheus.local.lab
@@ -3865,17 +3822,17 @@ backend grafana_back
 sudo systemctl restart haproxy
 ```
 
-### 15.4 Backup and Disaster Recovery
+### 15.4 Backup и Disaster Recovery
 
-#### Backup script for Kubernetes
+#### Backup скрипт для Kubernetes
 
-On the K3s Master create:
+На K3s Master создайте:
 
 ```bash
 sudo vim /usr/local/bin/k8s-backup.sh
 ```
 
-Content:
+Содержимое:
 
 ```bash
 #!/bin/bash
@@ -3919,13 +3876,13 @@ sudo chmod +x /usr/local/bin/k8s-backup.sh
 sudo /usr/local/bin/k8s-backup.sh
 ```
 
-#### Cron for automatic backups
+#### Cron для автоматических backup
 
 ```bash
 sudo crontab -e
 ```
 
-Add:
+Добавьте:
 
 ```
 # Kubernetes backup каждый день в 2:00 AM
@@ -3934,7 +3891,7 @@ Add:
 
 #### GitLab Backup
 
-On GitLab VM:
+На GitLab VM:
 
 ```bash
 # Создание backup
@@ -3947,14 +3904,14 @@ ls -lh /var/opt/gitlab/backups/
 sudo crontab -e
 ```
 
-Add:
+Добавьте:
 
 ```
 # GitLab backup каждый день в 1:00 AM
 0 1 * * * /opt/gitlab/bin/gitlab-backup create CRON=1
 ```
 
-#### Restore procedure
+#### Restore процедура
 
 **Kubernetes restore**:
 
@@ -4030,7 +3987,7 @@ kubectl label namespace default pod-security.kubernetes.io/warn=restricted
 
 #### Secrets Management
 
-Using External Secrets Operator (optional):
+Использование External Secrets Operator (опционально):
 
 ```bash
 helm repo add external-secrets https://charts.external-secrets.io
@@ -4042,90 +3999,82 @@ helm install external-secrets \
   --create-namespace
 ```
 
-***
+---
 
-## Conclusion
+## Заключение
 
-### What we built
+### Что мы построили
 
-You have successfully deployed a full-fledged enterprise-grade DevOps platform based on Proxmox VE:
+Вы успешно развернули полноценную enterprise-grade DevOps платформу на базе Proxmox VE:
 
-✅ **Infrastructure**:
-
-* 5 virtual machines with optimal resource allocation
-* Two-tier network architecture with complete isolation
-* NAT Gateway with iptables for secure access
-* BIND9 DNS server for local resolving
-* HAProxy for centralized access to services
+✅ **Инфраструктура**:
+- 5 виртуальных машин с оптимальным распределением ресурсов
+- Двухуровневая сетевая архитектура с полной изоляцией
+- NAT Gateway с iptables для безопасного доступа
+- DNS сервер BIND9 для локального резолвинга
+- HAProxy для централизованного доступа к сервисам
 
 ✅ **CI/CD Pipeline**:
+- GitLab CE для управления кодом и оркестрации CI/CD
+- 6-stage pipeline: build → test → quality → package → dockerize → deploy
+- Автоматические тесты с покрытием кода
+- Статический анализ кода с SonarQube
+- Хранение артефактов в Nexus Repository
+- Контейнеризация с Docker/Kaniko
+- Автоматический deployment в Kubernetes
 
-* GitLab CE for code management and CI/CD orchestration
-* 6-stage pipeline: build → test → quality → package → dockerize → deploy
-* Automated tests with code coverage
-* Static code analysis with SonarQube
-* Storing artifacts in Nexus Repository
-* Containerization with Docker/Kaniko
-* Automatic deployment in Kubernetes
+✅ **Kubernetes Кластер**:
+- K3s (3 ноды: 1 master + 2 workers)
+- MetalLB LoadBalancer для bare-metal
+- Helm для управления приложениями
+- GitLab Runner в Kubernetes для CI/CD
+- Готовность к production workloads
 
-✅ **Kubernetes Cluster**:
+✅ **Дополнительные возможности**:
+- Мониторинг с Prometheus и Grafana
+- Автоматическое масштабирование (HPA)
+- Backup и disaster recovery
+- Security hardening с Network Policies
 
-* K3s (3 nodes: 1 master + 2 workers)
-* MetalLB LoadBalancer for bare-metal
-* Helm for application management
-* GitLab Runner in Kubernetes for CI/CD
-* Readiness for production workloads
+### Архитектурные преимущества
 
-✅ **Additional features**:
+🔒 **Безопасность**:
+- Изоляция DevOps сервисов во внутренней сети
+- Единая точка входа через Jump Host
+- Контроль трафика с iptables
+- Pod Security Standards в Kubernetes
 
-* Monitoring with Prometheus and Grafana
-* Automatic Scaling (HPA)
-* Backup and disaster recovery
-* Security hardening with Network Policies
+⚡ **Производительность**:
+- Распределение нагрузки между worker нодами
+- Кэширование Maven зависимостей
+- Оптимизация ресурсов для каждого компонента
+- LoadBalancer с MetalLB
 
-### Architectural advantages
+🔄 **Автоматизация**:
+- End-to-end pipeline от commit до production
+- Автоматические тесты и анализ качества
+- Zero-downtime deployments
+- Rollback capabilities
 
-🔒 **Safety**:
+📈 **Масштабируемость**:
+- Горизонтальное масштабирование с HPA
+- Легкое добавление worker нод
+- Модульная архитектура
+- Cloud-ready (легко мигрировать в облако)
 
-* Isolation of DevOps services in the internal network
-* Single entry point through Jump Host
-* Traffic control with iptables
-* Pod Security Standards in Kubernetes
+### Метрики успеха
 
-⚡ **Performance**:
+- **Время от коммита до production**: ~15-20 минут
+- **Покрытие тестами**: отслеживается в SonarQube
+- **Качество кода**: автоматический контроль через Quality Gates
+- **Uptime**: высокая доступность через репликацию pods
+- **Recovery Time**: < 5 минут с автоматическими backup
 
-* Load balancing between worker nodes
-* Caching Maven dependencies
-* Resource optimization for each component
-* LoadBalancer with MetalLB
+### Дальнейшее развитие
 
-🔄 **Automation**:
+#### Краткосрочные улучшения (1-2 недели)
 
-* End-to-end pipeline from commit to production
-* Automated tests and quality analysis
-* Zero-downtime deployments
-* Rollback capabilities
-
-📈 **Scalability**:
-
-* Horizontal scaling with HPA
-* Easy addition of worker nodes
-* Modular architecture
-* Cloud-ready (easy to migrate to the cloud)
-
-### Success Metrics
-
-* **Time from commit to production**: ~15-20 minutes
-* **Test coverage** : tracked in SonarQube
-* **Качество кода**automatic control through Quality Gates
-* **Uptime**: high availability through pod replication
-* **Recovery Time**: < 5 minutes with automatic backups
-
-### Further development
-
-#### Short-term improvements (1-2 weeks)
-
-1. **Monitoring and Observability**:
+1. **Мониторинг и Observability**:
    ```bash
    # Интеграция Application Performance Monitoring
    - Добавление Jaeger для distributed tracing
@@ -4152,7 +4101,7 @@ You have successfully deployed a full-fledged enterprise-grade DevOps platform b
    - Automated release notes generation
    ```
 
-#### Medium-term improvements (1-3 months)
+#### Среднесрочные улучшения (1-3 месяца)
 
 4. **Multi-Environment Strategy**:
    ```yaml
@@ -4161,24 +4110,24 @@ You have successfully deployed a full-fledged enterprise-grade DevOps platform b
      - development:   namespace: dev
      - staging:       namespace: staging
      - production:    namespace: prod
-
+   
    # Blue-Green Deployment
    - Duplicate production environment
    - Switch traffic with Ingress
    - Zero-downtime deployments
-
+   
    # Canary Deployments
    - Использование Flagger
    - Постепенный rollout новых версий
    - Automatic rollback на ошибках
    ```
 
-5. **GitOps approach**:
+5. **GitOps подход**:
    ```bash
    # Внедрение ArgoCD
    helm repo add argo https://argoproj.github.io/argo-helm
    helm install argocd argo/argo-cd -n argocd --create-namespace
-
+   
    # Декларативное управление через Git
    - Infrastructure as Code
    - Application definitions в Git
@@ -4194,13 +4143,13 @@ You have successfully deployed a full-fledged enterprise-grade DevOps platform b
    - Circuit breaking и retries
    ```
 
-#### Long-term improvements (3-6 months)
+#### Долгосрочные улучшения (3-6 месяцев)
 
-7. **Microservice architecture**:
-   * Splitting PetClinic into microservices
-   * API Gateway (Kong, Ambassador)
-   * Service discovery
-   * Distributed configuration
+7. **Микросервисная архитектура**:
+   - Разделение PetClinic на микросервисы
+   - API Gateway (Kong, Ambassador)
+   - Service discovery
+   - Distributed configuration
 
 8. **Cloud Migration Strategy**:
    ```bash
@@ -4212,13 +4161,13 @@ You have successfully deployed a full-fledged enterprise-grade DevOps platform b
    ```
 
 9. **AI/ML Integration**:
-   * Kubeflow for ML pipelines
-   * Model serving with Seldon/KServe
-   * MLOps practices
+   - Kubeflow для ML pipelines
+   - Model serving с Seldon/KServe
+   - MLOps practices
 
-### Operating Recommendations
+### Рекомендации по эксплуатации
 
-#### Daily tasks
+#### Ежедневные задачи
 
 ```bash
 # Morning checks
@@ -4235,7 +4184,7 @@ sudo gitlab-ctl status  # На GitLab VM
 # Проверка failed pipelines в GitLab UI
 ```
 
-#### Weekly tasks
+#### Еженедельные задачи
 
 ```bash
 # Security updates
@@ -4253,7 +4202,7 @@ kubectl top nodes
 kubectl top pods --all-namespaces --sort-by=memory
 ```
 
-#### Monthly tasks
+#### Ежемесячные задачи
 
 ```bash
 # Full backup test
@@ -4270,7 +4219,7 @@ kubectl get pods --all-namespaces -o jsonpath='{range .items[*]}{.metadata.name}
 # Обновление runbooks и procedures
 ```
 
-#### Quarterly tasks
+#### Ежеквартальные задачи
 
 ```bash
 # Disaster recovery drill
@@ -4288,7 +4237,7 @@ kubectl get pods --all-namespaces -o jsonpath='{range .items[*]}{.metadata.name}
 
 ### Troubleshooting Guide
 
-#### Problem: GitLab is unavailable
+#### Проблема: GitLab недоступен
 
 ```bash
 # 1. Проверка VM
@@ -4309,7 +4258,7 @@ curl http://192.168.50.10  # Прямой доступ
 sudo systemctl status haproxy
 ```
 
-#### Problem: Pipeline is hanging
+#### Проблема: Pipeline зависает
 
 ```bash
 # 1. Проверка GitLab Runner
@@ -4327,7 +4276,7 @@ kubectl describe node <node-with-runner-pod>
 kubectl rollout restart deployment -n gitlab-runner
 ```
 
-#### Problem: Kubernetes pod in CrashLoopBackOff
+#### Проблема: Kubernetes pod в CrashLoopBackOff
 
 ```bash
 # 1. Посмотреть что случилось
@@ -4347,7 +4296,7 @@ kubectl top pod <pod-name>
 kubectl debug <pod-name> -it --image=busybox
 ```
 
-#### Problem: Service unavailable through LoadBalancer
+#### Проблема: Service недоступен через LoadBalancer
 
 ```bash
 # 1. Проверка service
@@ -4368,7 +4317,7 @@ curl http://<loadbalancer-ip>:<port>
 kubectl get endpoints <service-name>
 ```
 
-#### Problem: DNS does not resolve
+#### Проблема: DNS не резолвится
 
 ```bash
 # 1. На Gateway проверка BIND
@@ -4387,7 +4336,7 @@ sudo journalctl -u bind9 -f
 # Linux: cat /etc/resolv.conf
 ```
 
-### Useful commands
+### Полезные команды
 
 #### Kubernetes
 
@@ -4458,77 +4407,77 @@ docker search <username>/spring-petclinic
 docker pull <username>/spring-petclinic:latest
 ```
 
-### Final checklist
+### Финальный чек-лист
 
-Before finishing, make sure:
+Перед завершением убедитесь:
 
-* \[ ] All VMs are accessible and operational
-* \[ ] DNS resolves all services (gitlab, nexus, sonarqube, petclinic)
-* \[ ] HAProxy proxies traffic correctly
-* \[ ] GitLab is available and running
-* \[ ] Kubernetes cluster in Ready status (all nodes)
-* \[ ] MetalLB assigns IP addresses
-* \[ ] SonarQube is available and running
-* \[ ] Nexus is available and running
-* \[ ] GitLab Runner is registered and active
-* \[ ] Test pipeline completed successfully
-* \[ ] PetClinic deployed and available
-* \[ ] Monitoring configured (if installed)
-* \[ ] Backup scripts created and tested
-* \[ ] Documentation updated
+- [ ] Все VM доступны и работают
+- [ ] DNS резолвит все сервисы (gitlab, nexus, sonarqube, petclinic)
+- [ ] HAProxy проксирует трафик корректно
+- [ ] GitLab доступен и работает
+- [ ] Kubernetes кластер в статусе Ready (все ноды)
+- [ ] MetalLB назначает IP адреса
+- [ ] SonarQube доступен и работает
+- [ ] Nexus доступен и работает
+- [ ] GitLab Runner зарегистрирован и активен
+- [ ] Тестовый pipeline успешно выполнился
+- [ ] PetClinic задеплоен и доступен
+- [ ] Мониторинг настроен (если установлен)
+- [ ] Backup скрипты созданы и протестированы
+- [ ] Документация обновлена
 
-### Useful resources
+### Полезные ресурсы
 
-#### Official documentation
+#### Официальная документация
 
-* **Proxmox**: https://pve.proxmox.com/wiki/Main\_Page
-* **Terraform Proxmox Provider**: https://registry.terraform.io/providers/Telmate/proxmox/latest/docs
-* **GitLab**: https://docs.gitlab.com/
-* **K3s**: https://docs.k3s.io/
-* **Kubernetes**: https://kubernetes.io/docs/
-* **helmet**: https://helm.sh/docs/
-* **SonarQube**: https://docs.sonarqube.org/
-* **Nexus**: https://help.sonatype.com/repomanager3
-* **HAProxy**: http://www.haproxy.org/
-* **BIND9**: https://bind9.readthedocs.io/
+- **Proxmox**: https://pve.proxmox.com/wiki/Main_Page
+- **Terraform Proxmox Provider**: https://registry.terraform.io/providers/Telmate/proxmox/latest/docs
+- **GitLab**: https://docs.gitlab.com/
+- **K3s**: https://docs.k3s.io/
+- **Kubernetes**: https://kubernetes.io/docs/
+- **Helm**: https://helm.sh/docs/
+- **SonarQube**: https://docs.sonarqube.org/
+- **Nexus**: https://help.sonatype.com/repomanager3
+- **HAProxy**: http://www.haproxy.org/
+- **BIND9**: https://bind9.readthedocs.io/
 
-#### Community and Support
+#### Community и поддержка
 
-* **Proxmox Forum**: https://forum.proxmox.com/
-* **GitLab Community**: https://forum.gitlab.com/
-* **Kubernetes Slack**: https://kubernetes.slack.com/
-* **Stack Overflow**: tags kubernetes, gitlab-ci, k3s
+- **Proxmox Forum**: https://forum.proxmox.com/
+- **GitLab Community**: https://forum.gitlab.com/
+- **Kubernetes Slack**: https://kubernetes.slack.com/
+- **Stack Overflow**: теги kubernetes, gitlab-ci, k3s
 
-#### Books and Courses
+#### Книги и курсы
 
-* "Kubernetes Up & Running" by Kelsey Hightower
-* "GitLab CI/CD Pipeline" courses on Udemy
-* "Site Reliability Engineering" by Google
-* "The DevOps Handbook" by Gene Kim
+- "Kubernetes Up & Running" by Kelsey Hightower
+- "GitLab CI/CD Pipeline" courses on Udemy
+- "Site Reliability Engineering" by Google
+- "The DevOps Handbook" by Gene Kim
 
-### Contacts and Support
+### Контакты и поддержка
 
-If you encounter any problems:
+Если возникнут проблемы:
 
-1. **Check the logs** - 80% of problems are visible in the logs
-2. **Use the search** - most of the problems have already been solved
-3. **Community форумы** - an active community will always help
-4. **GitHub Issues** - for specific bugs in projects
+1. **Проверьте логи** - 80% проблем видны в логах
+2. **Используйте поиск** - большинство проблем уже решены
+3. **Community форумы** - активное сообщество всегда поможет
+4. **GitHub Issues** - для специфических багов в проектах
 
-### Acknowledgments
+### Благодарности
 
-This instruction was made possible thanks to:
+Эта инструкция стала возможной благодаря:
 
-* Open Source community
-* Documentation of all used projects
-* DevOps practices and industry patterns
-* Your desire to learn and build!
+- Open Source сообществу
+- Документации всех использованных проектов
+- DevOps практикам и паттернам индустрии
+- Вашему желанию учиться и строить!
 
-***
+---
 
-## Applications
+## Приложения
 
-### Appendix A: Command Cheat Sheet
+### Приложение A: Шпаргалка по командам
 
 ```bash
 # === Proxmox ===
@@ -4600,9 +4549,9 @@ netstat -tulpn                   # Open ports
 ss -tulpn                        # Socket statistics
 ```
 
-### Appendix B: GitLab CI/CD Environment Variables
+### Приложение B: Переменные окружения GitLab CI/CD
 
-Complete list of variables to copy into GitLab:
+Полный список переменных для копирования в GitLab:
 
 ```yaml
 # Nexus
@@ -4623,7 +4572,7 @@ CI_REGISTRY_PASSWORD: <token>
 KUBECONFIG: <содержимое ~/.kube/config с master> (тип: File)
 ```
 
-### Appendix C: Network Card
+### Приложение C: Сетевая карта
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -4665,9 +4614,9 @@ Access from Windows:
 3. Web Services: http://*.local.lab (через HAProxy)
 ```
 
-### Appendix D: Ports and Protocols
+### Приложение D: Порты и протоколы
 
-| Service | Port | Protocol | Access |
+| Сервис | Порт | Протокол | Доступ |
 |--------|------|----------|--------|
 | SSH Gateway | 22 | TCP | 10.0.10.30:22 |
 | HTTP (HAProxy) | 80 | TCP | 10.0.10.30:80 |
@@ -4683,42 +4632,44 @@ Access from Windows:
 | Prometheus | 9090 | TCP | 192.168.50.105:9090 |
 | Grafana | 80 | TCP | 192.168.50.106:80 |
 
-***
+---
 
-## Final words
+## Финальные слова
 
-A fully functional enterprise-level DevOps platform has been built on proprietary hardware. This infrastructure:
+Построена полнофункциональная DevOps платформа enterprise-уровняна собственном оборудовании. Эта инфраструктура:
 
-✅ Fully automated from code to production\
-✅ Follows modern best practices\
-✅ Scalable and extensible\
-✅ Safe with network isolation\
-✅ Production-ready for real projects
+✅ Полностью автоматизирована от кода до production  
+✅ Следует современным best practices  
+✅ Масштабируема и расширяема  
+✅ Безопасна с изоляцией сетей  
+✅ Production-ready для реальных проектов  
 
-**Key achievements:**
+**Ключевые достижения:**
 
-* Deployed multi-VM infrastructure with Terraform
-* Configured full network isolation with NAT and DNS
-* Built a CI/CD pipeline with automated tests and quality gates
-* Kubernetes cluster deployed for container applications
-* Integrated industry-standard tools (GitLab, SonarQube, Nexus)
-* Monitoring and backup configured
+- Развернута multi-VM инфраструктура с Terraform
+- Настроена полная сетевая изоляция с NAT и DNS
+- Построен CI/CD pipeline с автоматическими тестами и quality gates
+- Развернут Kubernetes кластер для контейнерных приложений
+- Интегрированы industry-standard инструменты (GitLab, SonarQube, Nexus)
+- Настроен мониторинг и backup
 
-**Stack used:**
+**Используемый стек:**
 
-* Infrastructure as Code (Terraform)
-* Network technologies (NAT, DNS, reverse proxy)
-* CI/CD pipeline design and implementation
-* Kubernetes administration
-* Container orchestration with Helm
-* DevOps best practices
+- Infrastructure as Code (Terraform)
+- Сетевые технологии (NAT, DNS, reverse proxy)
+- CI/CD pipeline design и реализация
+- Kubernetes администрирование
+- Container orchestration с Helm
+- DevOps best practices
 
-**What needs to be done next:**
+**Что нужно делать далее:**
 
-1. Study system metrics and logs
-2. Experiment with various applications
-3. Expand functionality gradually
-4. Document all changes
-5. Shares experience with the community
+1. Изучить метрики и логи системы
+2. Экспериментировать с различными приложениями
+3. Расширять функциональность постепенно
+4. Документировать все изменения
+5. Делится опытом с сообществом
 
-***
+---
+
+
